@@ -19,6 +19,7 @@ import logzero
 from logzero import logger
 
 from inference.llavaov_hermes import load_model as llavaov_hermes_load_model
+from inference.llavaov_slidingwindow import load_model as llavaov_slidingwindow_load_model
 
 
 def qwenvl_hermes_load_model(*args, **kwargs):
@@ -27,6 +28,18 @@ def qwenvl_hermes_load_model(*args, **kwargs):
     except Exception as exc:
         raise ImportError(
             "Failed to import inference.qwenvl_hermes. "
+            "Qwen models require a newer transformers version. "
+            "Please use llava models on old transformers, or upgrade for qwen."
+        ) from exc
+    return _load_model(*args, **kwargs)
+
+
+def qwenvl_slidingwindow_load_model(*args, **kwargs):
+    try:
+        from inference.qwenvl_slidingwindow import load_model as _load_model
+    except Exception as exc:
+        raise ImportError(
+            "Failed to import inference.qwenvl_slidingwindow. "
             "Qwen models require a newer transformers version. "
             "Please use llava models on old transformers, or upgrade for qwen."
         ) from exc
@@ -55,6 +68,30 @@ MODELS = {
     },
     'qwen2.5_vl_32b': {
         'load_func': qwenvl_hermes_load_model,
+        'model_path': 'models/Qwen2.5-VL-32B-Instruct',
+    },
+    'llava_ov_0.5b_slidingwindow': {
+        'load_func': llavaov_slidingwindow_load_model,
+        'model_path': 'models/llava-onevision-qwen2-0.5b-ov-hf',
+    },
+    'llava_ov_7b_slidingwindow': {
+        'load_func': llavaov_slidingwindow_load_model,
+        'model_path': 'models/llava-onevision-qwen2-7b-ov-hf',
+    },
+    'llava_ov_72b_slidingwindow': {
+        'load_func': llavaov_slidingwindow_load_model,
+        'model_path': 'models/llava-onevision-qwen2-72b-ov-hf',
+    },
+    'qwen2.5_vl_3b_slidingwindow': {
+        'load_func': qwenvl_slidingwindow_load_model,
+        'model_path': 'models/Qwen2.5-VL-3B-Instruct',
+    },
+    'qwen2.5_vl_7b_slidingwindow': {
+        'load_func': qwenvl_slidingwindow_load_model,
+        'model_path': 'models/Qwen2.5-VL-7B-Instruct',
+    },
+    'qwen2.5_vl_32b_slidingwindow': {
+        'load_func': qwenvl_slidingwindow_load_model,
         'model_path': 'models/Qwen2.5-VL-32B-Instruct',
     },
 }

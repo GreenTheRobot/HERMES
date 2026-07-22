@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import torch
@@ -97,6 +98,10 @@ class HermesVQA(BaseVQA):
             duration_category = video_sample.get('duration_category', None)
             if duration_category is not None:
                 record_entry['duration_category'] = duration_category
+
+            token_timings = getattr(self.qa_model, 'last_token_inference_times', None)
+            if token_timings is not None:
+                record_entry['token_inference_times'] = json.dumps(token_timings)
 
             self.record.append(record_entry)
 

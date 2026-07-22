@@ -93,7 +93,7 @@ def run_eval(args, config):
             ]
             device = (
                 f'{4*idx},{4*idx+1},{4*idx+2},{4*idx+3}'
-                if args.model == 'llava_ov_72b' else str(idx)
+                if args.model in {'llava_ov_72b', 'llava_ov_72b_slidingwindow'} else str(idx)
             )
             p = multiprocessing.Process(target=exec, args=(cmd, True, device))
             processes.append(p)
@@ -127,7 +127,25 @@ def run_eval(args, config):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="llava_ov_7b", choices=['llava_ov_0.5b', 'llava_ov_7b', 'llava_ov_72b', 'qwen2.5_vl_3b', 'qwen2.5_vl_7b', 'qwen2.5_vl_32b'])
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="llava_ov_7b",
+        choices=[
+            'llava_ov_0.5b',
+            'llava_ov_7b',
+            'llava_ov_72b',
+            'qwen2.5_vl_3b',
+            'qwen2.5_vl_7b',
+            'qwen2.5_vl_32b',
+            'llava_ov_0.5b_slidingwindow',
+            'llava_ov_7b_slidingwindow',
+            'llava_ov_72b_slidingwindow',
+            'qwen2.5_vl_3b_slidingwindow',
+            'qwen2.5_vl_7b_slidingwindow',
+            'qwen2.5_vl_32b_slidingwindow',
+        ],
+    )
     parser.add_argument("--dataset", type=str, default=None, choices=list(BENCHMARK_CONFIGS.keys()))
     parser.add_argument("--num_chunks", type=int, default=1)
     parser.add_argument("--only_eval", action="store_true")
