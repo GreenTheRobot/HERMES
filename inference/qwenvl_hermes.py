@@ -745,11 +745,14 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         stop_token_ids = [self.processor.tokenizer.eos_token_id]
         output_ids = []
 
-        start_time = time.perf_counter()
-
         prompt = input_text['prompt']
         input_ids = self.processor.tokenizer(prompt).input_ids
         input_ids = torch.as_tensor([input_ids], device=device)
+
+        self.last_token_inference_times = []
+        if input_ids.is_cuda:
+            torch.cuda.synchronize(device)
+        prefill_start_time = time.perf_counter()
 
         self._ensure_dynamic_cache()
         past_lens_prefill = self._get_cache_seq_len_per_layer()
@@ -810,11 +813,44 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
             output_ids.append(token)
 
-            if (not pseudo_forward) and (step == 0):
-                end_time = time.perf_counter()
-                print(f"TTFT: {end_time - start_time} seconds")
+            if step == 0:
+                if input_ids.is_cuda:
+                    torch.cuda.synchronize(device)
+                token_latency = time.perf_counter() - prefill_start_time
+                self.last_token_inference_times.append(
+                    {
+                        "token_index": step,
+                        "token_id": token,
+                        "phase": "prefill",
+                        "latency_seconds": token_latency,
+                    }
+                )
+                if not pseudo_forward:
+                    logger.info(
+                        "[TokenTiming] token_index=%d token_id=%d phase=prefill latency_seconds=%.9f",
+                        step,
+                        token,
+                        token_latency,
+                    )
+                    print(f"TTFT: {token_latency} seconds")
+            else:
+                self.last_token_inference_times.append(
+                    {
+                        "token_index": step,
+                        "token_id": token,
+                        "phase": "decode",
+                        "latency_seconds": pending_decode_latency,
+                    }
+                )
+                if not pseudo_forward:
+                    logger.info(
+                        "[TokenTiming] token_index=%d token_id=%d phase=decode latency_seconds=%.9f",
+                        step,
+                        token,
+                        pending_decode_latency,
+                    )
 
-            if token in stop_token_ids:
+            if token in stop_token_ids or step == max_new_tokens - 1:
                 break
 
             curr_global_offset = self._get_next_global_offset_per_layer()
@@ -826,6 +862,9 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
             position_ids_3d = self._build_position_ids_3d_for_text(curr_global_offset[0], 1, 1)
 
+            if input_ids.is_cuda:
+                torch.cuda.synchronize(device)
+            decode_start_time = time.perf_counter()
             out = self.language_model(
                 input_ids=torch.as_tensor([[token]], device=device),
                 use_cache=True,
@@ -834,6 +873,9 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
             )
 
             logits = self.lm_head(out.last_hidden_state)
+            if input_ids.is_cuda:
+                torch.cuda.synchronize(device)
+            pending_decode_latency = time.perf_counter() - decode_start_time
             past_key_values = out.past_key_values
 
             for layer_idx in range(self.num_layers):
@@ -928,6 +970,7 @@ def load_model(model_path='Qwen/Qwen2.5-VL-7B-Instruct',
     model.long_term_threshold = int(model.num_layers * (1 - model.long_term_ratio))
 
     model.total_processed_frames = 0
+    model.last_token_inference_times = []
 
     model._mrope_section = _get_mrope_section(base_model.model)
 

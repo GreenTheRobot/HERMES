@@ -20,6 +20,7 @@ class HermesVQA(BaseVQA):
     @torch.inference_mode()
     def analyze_a_video(self, video_sample, encode_chunk_size=16):
         video_path = video_sample['video_path']
+        video_index = video_sample['_dataset_video_index']
 
         video_fps = video_sample.get('fps', None)
         clip = video_sample.get('clip', None)
@@ -41,7 +42,7 @@ class HermesVQA(BaseVQA):
 
         current_frame_idx = 0
 
-        for sample in tqdm(video_sample['conversations']):
+        for question_index, sample in enumerate(tqdm(video_sample['conversations'])):
             logger.debug(f'sample: {sample}')
             question = sample['question']
             answer = sample['answer']
@@ -90,6 +91,9 @@ class HermesVQA(BaseVQA):
                     'answer': answer,
                     'pred_answer': qa_results['pred_answer'],
                 }
+
+            record_entry['video_index'] = video_index
+            record_entry['question_index'] = question_index
 
             task = sample.get('task', sample.get('question_type', video_sample.get('task', None)))
             if task is not None:

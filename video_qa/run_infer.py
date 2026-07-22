@@ -120,6 +120,23 @@ def run_eval(args, config):
             exec(f"tail -n +2 {chunk_file} >> {results_path}")
             exec(f"rm {chunk_file}")
 
+    if not args.skip_token_timing_analysis:
+        subprocess.run(
+            [
+                "python",
+                "eval/analyze_token_timings.py",
+                "--results_path",
+                results_path,
+                "--output_dir",
+                save_dir,
+                "--detail_prefix",
+                args.timing_detail_prefix,
+                "--summary_prefix",
+                args.timing_summary_prefix,
+            ],
+            check=True,
+        )
+
     fmt = {"results_path": results_path, "save_dir": save_dir, "anno_path": config["anno_path"]}
     for cmd_template in config["eval_cmds"]:
         exec(cmd_template.format(**fmt))
@@ -152,6 +169,23 @@ if __name__ == "__main__":
     parser.add_argument("--sample_fps", type=float, default=1)
     parser.add_argument("--debug", type=str, default='false')
     parser.add_argument("--kv_size", type=int)
+    parser.add_argument(
+        "--skip_token_timing_analysis",
+        action="store_true",
+        help="Skip generation of token timing detail and summary CSV files.",
+    )
+    parser.add_argument(
+        "--timing_detail_prefix",
+        type=str,
+        default="token_timings",
+        help="Filename prefix for token-level timing CSV files.",
+    )
+    parser.add_argument(
+        "--timing_summary_prefix",
+        type=str,
+        default="token_timing_summary",
+        help="Filename prefix for timing summary CSV files.",
+    )
     args = parser.parse_args()
 
     if args.dataset in BENCHMARK_CONFIGS:

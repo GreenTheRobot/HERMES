@@ -106,6 +106,10 @@ class BaseVQA:
 
         self.num_chunks = num_chunks
         self.chunk_idx = chunk_idx
+        anno = [
+            {**video_sample, '_dataset_video_index': video_index}
+            for video_index, video_sample in enumerate(anno)
+        ]
         if num_chunks is not None:
             anno = self.get_chunk(anno, num_chunks, chunk_idx)
         self.anno = anno

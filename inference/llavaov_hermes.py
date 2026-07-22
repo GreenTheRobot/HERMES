@@ -731,11 +731,14 @@ class LlavaOneVision_Hermes(LlavaOnevisionForConditionalGeneration, Abstract_Her
         stop_token_ids = [self.processor.tokenizer.eos_token_id]
         output_ids = []
 
-        start_time = time.perf_counter()
-        
         prompt = input_text['prompt']
         input_ids = self.processor.tokenizer(prompt).input_ids
         input_ids = torch.as_tensor([input_ids], device=device)
+
+        self.last_token_inference_times = []
+        if input_ids.is_cuda:
+            torch.cuda.synchronize(device)
+        prefill_start_time = time.perf_counter()
 
         past_lens_prefill = self._get_cache_seq_len_per_layer()
         start_pos_prefill = self._get_next_start_pos_per_layer()
@@ -797,7 +800,45 @@ class LlavaOneVision_Hermes(LlavaOnevisionForConditionalGeneration, Abstract_Her
                     token = int(indices[0])
 
             output_ids.append(token)
-            if token in stop_token_ids:
+
+            if step == 0:
+                if input_ids.is_cuda:
+                    torch.cuda.synchronize(device)
+                token_latency = time.perf_counter() - prefill_start_time
+                self.last_token_inference_times.append(
+                    {
+                        "token_index": step,
+                        "token_id": token,
+                        "phase": "prefill",
+                        "latency_seconds": token_latency,
+                    }
+                )
+                if not pseudo_forward:
+                    logger.info(
+                        "[TokenTiming] token_index=%d token_id=%d phase=prefill latency_seconds=%.9f",
+                        step,
+                        token,
+                        token_latency,
+                    )
+                    print(f"TTFT: {token_latency} seconds")
+            else:
+                self.last_token_inference_times.append(
+                    {
+                        "token_index": step,
+                        "token_id": token,
+                        "phase": "decode",
+                        "latency_seconds": pending_decode_latency,
+                    }
+                )
+                if not pseudo_forward:
+                    logger.info(
+                        "[TokenTiming] token_index=%d token_id=%d phase=decode latency_seconds=%.9f",
+                        step,
+                        token,
+                        pending_decode_latency,
+                    )
+
+            if token in stop_token_ids or step == max_new_tokens - 1:
                 break
 
             curr_start_pos = self._get_next_start_pos_per_layer()
@@ -814,6 +855,9 @@ class LlavaOneVision_Hermes(LlavaOnevisionForConditionalGeneration, Abstract_Her
             pos_step = torch.tensor([curr_start_pos[0]], device=device, dtype=torch.long)
             position_ids = pos_step.view(1, 1)
 
+            if input_ids.is_cuda:
+                torch.cuda.synchronize(device)
+            decode_start_time = time.perf_counter()
             out = self.language_model(
                 input_ids=torch.as_tensor([[token]], device=device),
                 use_cache=True,
@@ -822,11 +866,10 @@ class LlavaOneVision_Hermes(LlavaOnevisionForConditionalGeneration, Abstract_Her
                 cache_position=None,
                 attention_mask=None,
             )
-            
-            if (not pseudo_forward) and (step == 0):
-                end_time = time.perf_counter()
-                print(f"TTFT: {end_time - start_time} seconds")
-                
+            if input_ids.is_cuda:
+                torch.cuda.synchronize(device)
+            pending_decode_latency = time.perf_counter() - decode_start_time
+
             logits = out.logits
             past_key_values = out.past_key_values
 
@@ -921,6 +964,7 @@ def load_model(model_path='llava-onevision-qwen2-7b-ov-hf',
     model.token_activity_cache = [None for _ in range(num_layers)]
     
     model.total_processed_frames = 0
+    model.last_token_inference_times = []
     
     model._layer_position_ids = {}
     model._hook_handles = []
