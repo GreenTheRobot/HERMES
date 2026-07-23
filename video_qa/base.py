@@ -45,6 +45,18 @@ def qwenvl_slidingwindow_load_model(*args, **kwargs):
         ) from exc
     return _load_model(*args, **kwargs)
 
+
+def qwenvl_vispec_draft_latency_load_model(*args, **kwargs):
+    try:
+        from inference.qwenvl_vispec_draft_latency import load_model as _load_model
+    except Exception as exc:
+        raise ImportError(
+            "Failed to import inference.qwenvl_vispec_draft_latency. "
+            "The ViSpec draft latency backend requires Qwen dependencies and "
+            "the sibling ViSpec source tree."
+        ) from exc
+    return _load_model(*args, **kwargs)
+
 MODELS = {
     'llava_ov_0.5b': {
         'load_func': llavaov_hermes_load_model,
@@ -69,6 +81,14 @@ MODELS = {
     'qwen2.5_vl_32b': {
         'load_func': qwenvl_hermes_load_model,
         'model_path': 'models/Qwen2.5-VL-32B-Instruct',
+    },
+    'qwen2.5_vl_3b_vispec_draft_latency': {
+        'load_func': qwenvl_vispec_draft_latency_load_model,
+        'model_path': 'models/Qwen2.5-VL-3B-Instruct',
+    },
+    'qwen2.5_vl_7b_vispec_draft_latency': {
+        'load_func': qwenvl_vispec_draft_latency_load_model,
+        'model_path': 'models/Qwen2.5-VL-7B-Instruct',
     },
     'llava_ov_0.5b_slidingwindow': {
         'load_func': llavaov_slidingwindow_load_model,
@@ -147,7 +167,7 @@ class BaseVQA:
             return video
         else:
             print(f"[LoadVideo] opening {video_path}", flush=True)
-            vr = VideoReader(video_path, num_threads=1)
+            vr = VideoReader(video_path, num_threads=8)
             fps = round(vr.get_avg_fps())
             total_frames = len(vr)
             
@@ -324,6 +344,34 @@ def work(QA_CLASS):
     parser.add_argument("--kv_size", type=int)
     parser.add_argument("--streaming", type=str2bool, nargs='?', const=True, default=False,
                         help="Streaming (online) mode. If False (default), uses offline mode where should_compact is always True.")
+    parser.add_argument("--vispec_spec_model_path", type=str, default=None)
+    parser.add_argument("--vispec_depth", type=int, default=3)
+    parser.add_argument("--vispec_top_k", type=int, default=8)
+    parser.add_argument("--vispec_total_token", type=int, default=30)
+    parser.add_argument("--vispec_num_q", type=int, default=2)
+    parser.add_argument("--vispec_temperature", type=float, default=0.0)
+    parser.add_argument(
+        "--vispec_profile_visual_rebuild",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=True,
+    )
+    parser.add_argument(
+        "--vispec_include_visual_rebuild_in_total",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=False,
+    )
+    parser.add_argument(
+        "--vispec_ignore_hermes_summary",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=True,
+    )
+    parser.add_argument("--vispec_source_keep_policy", type=str, default="union_all")
     args = parser.parse_args()
 
     if not args.debug:
@@ -340,12 +388,30 @@ def work(QA_CLASS):
     model_path = MODELS[args.model]['model_path']
     load_func = MODELS[args.model]['load_func']
     logger.info(f"Loading VideoQA model: {model_path}")
-    videoqa_model, videoqa_processor = load_func(
-        model_path=model_path,
-        kv_size=args.kv_size,
-        streaming=args.streaming,
-        sample_fps=args.sample_fps,
-    )
+    load_kwargs = {
+        "model_path": model_path,
+        "kv_size": args.kv_size,
+        "streaming": args.streaming,
+        "sample_fps": args.sample_fps,
+    }
+    if args.model.endswith("_vispec_draft_latency"):
+        load_kwargs.update(
+            {
+                "vispec_spec_model_path": args.vispec_spec_model_path,
+                "vispec_depth": args.vispec_depth,
+                "vispec_top_k": args.vispec_top_k,
+                "vispec_total_token": args.vispec_total_token,
+                "vispec_num_q": args.vispec_num_q,
+                "vispec_temperature": args.vispec_temperature,
+                "vispec_profile_visual_rebuild": args.vispec_profile_visual_rebuild,
+                "vispec_include_visual_rebuild_in_total": (
+                    args.vispec_include_visual_rebuild_in_total
+                ),
+                "vispec_ignore_hermes_summary": args.vispec_ignore_hermes_summary,
+                "vispec_source_keep_policy": args.vispec_source_keep_policy,
+            }
+        )
+    videoqa_model, videoqa_processor = load_func(**load_kwargs)
 
     # Load ground truth file
     anno = json.load(open(args.anno_path))

@@ -102,6 +102,31 @@ def run_eval(args, config):
                 "--kv_size", str(args.kv_size),
                 "--streaming", str(streaming),
             ]
+            if args.model.endswith("_vispec_draft_latency"):
+                cmd.extend(
+                    [
+                        "--vispec_depth", str(args.vispec_depth),
+                        "--vispec_top_k", str(args.vispec_top_k),
+                        "--vispec_total_token", str(args.vispec_total_token),
+                        "--vispec_num_q", str(args.vispec_num_q),
+                        "--vispec_temperature", str(args.vispec_temperature),
+                        "--vispec_profile_visual_rebuild",
+                        str(args.vispec_profile_visual_rebuild),
+                        "--vispec_include_visual_rebuild_in_total",
+                        str(args.vispec_include_visual_rebuild_in_total),
+                        "--vispec_ignore_hermes_summary",
+                        str(args.vispec_ignore_hermes_summary),
+                        "--vispec_source_keep_policy",
+                        args.vispec_source_keep_policy,
+                    ]
+                )
+                if args.vispec_spec_model_path:
+                    cmd.extend(
+                        [
+                            "--vispec_spec_model_path",
+                            args.vispec_spec_model_path,
+                        ]
+                    )
             if args.model in {'llava_ov_72b', 'llava_ov_72b_slidingwindow'}:
                 if gpu_ids:
                     device = ",".join(gpu_ids[4 * idx : 4 * idx + 4])
@@ -151,6 +176,26 @@ def run_eval(args, config):
             check=True,
         )
 
+    if (
+        args.model.endswith("_vispec_draft_latency")
+        and not args.skip_vispec_draft_timing_analysis
+    ):
+        subprocess.run(
+            [
+                "python",
+                "eval/analyze_vispec_draft_timings.py",
+                "--results_path",
+                results_path,
+                "--output_dir",
+                save_dir,
+                "--detail_prefix",
+                args.vispec_timing_detail_prefix,
+                "--summary_prefix",
+                args.vispec_timing_summary_prefix,
+            ],
+            check=True,
+        )
+
     if args.skip_eval:
         return
 
@@ -172,6 +217,8 @@ if __name__ == "__main__":
             'qwen2.5_vl_3b',
             'qwen2.5_vl_7b',
             'qwen2.5_vl_32b',
+            'qwen2.5_vl_3b_vispec_draft_latency',
+            'qwen2.5_vl_7b_vispec_draft_latency',
             'llava_ov_0.5b_slidingwindow',
             'llava_ov_7b_slidingwindow',
             'llava_ov_72b_slidingwindow',
@@ -214,6 +261,37 @@ if __name__ == "__main__":
         default="token_timing_summary",
         help="Filename prefix for timing summary CSV files.",
     )
+    parser.add_argument(
+        "--skip_vispec_draft_timing_analysis",
+        action="store_true",
+        help="Skip ViSpec draft-head timing analysis for ViSpec latency backends.",
+    )
+    parser.add_argument(
+        "--vispec_timing_detail_prefix",
+        type=str,
+        default="vispec_draft_timings",
+        help="Filename prefix for ViSpec draft layer timing CSV files.",
+    )
+    parser.add_argument(
+        "--vispec_timing_summary_prefix",
+        type=str,
+        default="vispec_draft_timing_summary",
+        help="Filename prefix for ViSpec draft timing summary CSV files.",
+    )
+    parser.add_argument("--vispec_spec_model_path", type=str, default=None)
+    parser.add_argument("--vispec_depth", type=int, default=3)
+    parser.add_argument("--vispec_top_k", type=int, default=8)
+    parser.add_argument("--vispec_total_token", type=int, default=30)
+    parser.add_argument("--vispec_num_q", type=int, default=2)
+    parser.add_argument("--vispec_temperature", type=float, default=0.0)
+    parser.add_argument("--vispec_profile_visual_rebuild", type=str, default="true")
+    parser.add_argument(
+        "--vispec_include_visual_rebuild_in_total",
+        type=str,
+        default="false",
+    )
+    parser.add_argument("--vispec_ignore_hermes_summary", type=str, default="true")
+    parser.add_argument("--vispec_source_keep_policy", type=str, default="union_all")
     args = parser.parse_args()
 
     if args.dataset in BENCHMARK_CONFIGS:

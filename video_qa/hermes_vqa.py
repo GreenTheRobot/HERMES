@@ -112,6 +112,10 @@ class HermesVQA(BaseVQA):
             if token_timings is not None:
                 record_entry['token_inference_times'] = json.dumps(token_timings)
 
+            vispec_draft_profile = getattr(self.qa_model, 'last_vispec_draft_profile', None)
+            if vispec_draft_profile is not None:
+                record_entry['vispec_draft_profile'] = json.dumps(vispec_draft_profile)
+
             self.record.append(record_entry)
 
 

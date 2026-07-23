@@ -3,7 +3,7 @@ export PYTHONPATH=$(cd "$(dirname "$0")/.." && pwd):$PYTHONPATH
 # Normally, set it to the number of GPUs on your machine.
 num_chunks=8
 
-# Supported model: [llava_ov_0.5b, llava_ov_7b, llava_ov_72b, qwen2.5_vl_3b, qwen2.5_vl_7b, qwen2.5_vl_32b]
+# Supported model: [llava_ov_0.5b, llava_ov_7b, llava_ov_72b, qwen2.5_vl_3b, qwen2.5_vl_7b, qwen2.5_vl_32b, qwen2.5_vl_3b_vispec_draft_latency, qwen2.5_vl_7b_vispec_draft_latency]
 model=llava_ov_7b
 
 # Supported dataset: [videomme, mvbench, egoschema, rvs_ego, rvs_movie, ovobench, streamingbench]

@@ -171,7 +171,7 @@ python video_qa/run_infer.py \
 
 | Argument | Description |
 |:---|:---|
-| `model` | Model to use. Options: `llava_ov_0.5b`, `llava_ov_7b`, `llava_ov_72b`, `qwen2.5_vl_3b`, `qwen2.5_vl_7b`, `qwen2.5_vl_32b` |
+| `model` | Model to use. Options include `llava_ov_0.5b`, `llava_ov_7b`, `llava_ov_72b`, `qwen2.5_vl_3b`, `qwen2.5_vl_7b`, `qwen2.5_vl_32b`, `qwen2.5_vl_3b_vispec_draft_latency`, `qwen2.5_vl_7b_vispec_draft_latency` |
 | `dataset` | Benchmark dataset. Options: `videomme`, `mvbench`, `egoschema`, `rvs_ego`, `rvs_movie`, `ovobench`, `streamingbench` |
 | `num_chunks` | Number of parallel processes for evaluation, typically set to the number of GPUs |
 | `sample_fps` | Frame sampling rate (frames per second) from the video |
