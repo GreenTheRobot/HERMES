@@ -69,6 +69,7 @@ python video_qa/run_infer.py \
 | `num_chunks` | 数据分片数量，通常与可用 GPU 数量一致 |
 | `sample_fps` | 从原视频采样的帧率 |
 | `kv_size` | 每层最多保留的视频 KV token 数量，不含固定系统提示前缀 |
+| `gpu_ids` | 可选。逗号分隔的物理 GPU 编号，用于覆盖默认分配，例如 `1,3` |
 | `only_eval` | 跳过推理，直接评测已有结果 |
 
 ### 2.2 实验调度入口：`video_qa/run_infer.py`
@@ -89,6 +90,51 @@ python video_qa/run_infer.py \
 ```text
 results/{model}/{dataset}/fps{sample_fps}-kv{kv_size}/results.csv
 ```
+
+### 2.3 GPU 设置规则
+
+`video_qa/run_infer.py` 会为每个数据分片启动一个子进程，并在子进程环境里设置
+`CUDA_VISIBLE_DEVICES`。当前实现的规则如下：
+
+- 普通模型（如 `llava_ov_0.5b`、`llava_ov_7b`、`qwen2.5_vl_7b`）：第 `idx`
+  个分片使用 `CUDA_VISIBLE_DEVICES=str(idx)`。
+- 72B 模型（`llava_ov_72b` 和 `llava_ov_72b_slidingwindow`）：第 `idx`
+  个分片使用 4 张卡，即 `4*idx,4*idx+1,4*idx+2,4*idx+3`。
+- 如果传入 `--gpu_ids`，则按该列表覆盖默认分配。例如普通模型下
+  `--num_chunks 2 --gpu_ids 1,3` 会让 chunk 0 使用物理 GPU 1，chunk 1
+  使用物理 GPU 3。
+- 因为子进程会重新赋值 `CUDA_VISIBLE_DEVICES`，所以应优先使用 `--gpu_ids`
+  指定非连续 GPU，而不是只在外层命令里写 `export CUDA_VISIBLE_DEVICES=1,3`。
+
+因此，默认启动方式适合使用从 0 开始连续编号的 GPU。例如使用物理 GPU 0 和 1：
+
+```bash
+python video_qa/run_infer.py \
+    --num_chunks 2 \
+    --model llava_ov_0.5b \
+    --dataset rvs_ego \
+    --sample_fps 0.5 \
+    --kv_size 6000 \
+    --debug false \
+    --skip_eval
+```
+
+如果要指定非连续 GPU，例如只使用物理 GPU 1 和 3：
+
+```bash
+python video_qa/run_infer.py \
+    --num_chunks 2 \
+    --gpu_ids 1,3 \
+    --model llava_ov_0.5b \
+    --dataset rvs_ego \
+    --sample_fps 0.5 \
+    --kv_size 6000 \
+    --debug false \
+    --skip_eval
+```
+
+72B 模型每个 chunk 需要 4 张 GPU，因此 `--num_chunks 2 --gpu_ids 0,1,2,3,4,5,6,7`
+会让 chunk 0 使用 `0,1,2,3`，chunk 1 使用 `4,5,6,7`。
 
 ## 3. 主调用链
 

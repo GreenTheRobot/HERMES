@@ -21,6 +21,11 @@ class HermesVQA(BaseVQA):
     def analyze_a_video(self, video_sample, encode_chunk_size=16):
         video_path = video_sample['video_path']
         video_index = video_sample['_dataset_video_index']
+        print(
+            f"[Video] start video_index={video_index} "
+            f"video_id={video_sample['video_id']} path={video_path}",
+            flush=True,
+        )
 
         video_fps = video_sample.get('fps', None)
         clip = video_sample.get('clip', None)
@@ -55,7 +60,7 @@ class HermesVQA(BaseVQA):
             while current_frame_idx < end_frame_idx:
                 next_encode_end = min(current_frame_idx + encode_chunk_size, end_frame_idx)
                 if next_encode_end > current_frame_idx:
-                    print(f"Encoding frames {current_frame_idx} to {next_encode_end-1}")
+                    print(f"Encoding frames {current_frame_idx} to {next_encode_end-1}", flush=True)
                     video_chunk = video_tensor[current_frame_idx:next_encode_end]
                     self.qa_model.encode_video_chunk(video_chunk)
                     current_frame_idx = next_encode_end
@@ -69,7 +74,7 @@ class HermesVQA(BaseVQA):
                     answer = choices[0]
                 correct_choice = self.choice_letters[choices.index(answer)]
                 qa_results = self.video_close_qa(question, choices, correct_choice)
-                print("Pred Answer: ", qa_results['pred_answer'])
+                print("Pred Answer: ", qa_results['pred_answer'], flush=True)
 
                 record_entry = {
                     'video_id': video_sample['video_id'],
@@ -83,7 +88,7 @@ class HermesVQA(BaseVQA):
                 }
             else:
                 qa_results = self.video_open_qa(question, max_new_tokens=256)
-                print("Pred Answer: ", qa_results['pred_answer'])
+                print("Pred Answer: ", qa_results['pred_answer'], flush=True)
 
                 record_entry = {
                     'video_id': video_sample['video_id'],

@@ -13,6 +13,7 @@ def exec(cmd, sub=False, device=None):
     else:
         my_env = os.environ.copy()
         my_env["CUDA_VISIBLE_DEVICES"] = device
+        print(f'CUDA_VISIBLE_DEVICES={device}')
         subprocess.run(cmd, env=my_env)
 
 
@@ -75,6 +76,16 @@ def run_eval(args, config):
     save_dir = f"results/{args.model}/{args.dataset}/fps{args.sample_fps}-kv{args.kv_size}"
     streaming = config["streaming"]
     results_path = f"{save_dir}/results.csv"
+    gpu_ids = None
+    if args.gpu_ids:
+        gpu_ids = [gpu_id.strip() for gpu_id in args.gpu_ids.split(",") if gpu_id.strip()]
+        gpus_per_chunk = 4 if args.model in {'llava_ov_72b', 'llava_ov_72b_slidingwindow'} else 1
+        required_gpus = num_chunks * gpus_per_chunk
+        if len(gpu_ids) < required_gpus:
+            raise ValueError(
+                f"--gpu_ids provides {len(gpu_ids)} GPU(s), but "
+                f"{num_chunks} chunk(s) require {required_gpus} GPU(s) for {args.model}."
+            )
 
     if not args.only_eval:
         processes = []
@@ -91,10 +102,13 @@ def run_eval(args, config):
                 "--kv_size", str(args.kv_size),
                 "--streaming", str(streaming),
             ]
-            device = (
-                f'{4*idx},{4*idx+1},{4*idx+2},{4*idx+3}'
-                if args.model in {'llava_ov_72b', 'llava_ov_72b_slidingwindow'} else str(idx)
-            )
+            if args.model in {'llava_ov_72b', 'llava_ov_72b_slidingwindow'}:
+                if gpu_ids:
+                    device = ",".join(gpu_ids[4 * idx : 4 * idx + 4])
+                else:
+                    device = f'{4*idx},{4*idx+1},{4*idx+2},{4*idx+3}'
+            else:
+                device = gpu_ids[idx] if gpu_ids else str(idx)
             p = multiprocessing.Process(target=exec, args=(cmd, True, device))
             processes.append(p)
             p.start()
@@ -137,6 +151,9 @@ def run_eval(args, config):
             check=True,
         )
 
+    if args.skip_eval:
+        return
+
     fmt = {"results_path": results_path, "save_dir": save_dir, "anno_path": config["anno_path"]}
     for cmd_template in config["eval_cmds"]:
         exec(cmd_template.format(**fmt))
@@ -170,9 +187,20 @@ if __name__ == "__main__":
     parser.add_argument("--debug", type=str, default='false')
     parser.add_argument("--kv_size", type=int)
     parser.add_argument(
+        "--gpu_ids",
+        type=str,
+        default=None,
+        help="Comma-separated physical GPU ids assigned to chunks, e.g. 1,3.",
+    )
+    parser.add_argument(
         "--skip_token_timing_analysis",
         action="store_true",
         help="Skip generation of token timing detail and summary CSV files.",
+    )
+    parser.add_argument(
+        "--skip_eval",
+        action="store_true",
+        help="Skip benchmark evaluation after inference and token timing analysis.",
     )
     parser.add_argument(
         "--timing_detail_prefix",

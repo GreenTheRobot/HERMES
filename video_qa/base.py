@@ -146,6 +146,7 @@ class BaseVQA:
             video = video[frame_idx]
             return video
         else:
+            print(f"[LoadVideo] opening {video_path}", flush=True)
             vr = VideoReader(video_path, num_threads=1)
             fps = round(vr.get_avg_fps())
             total_frames = len(vr)
@@ -163,7 +164,13 @@ class BaseVQA:
             # Sample frames at target fps within the clip range
             sample_step = int(fps / self.sample_fps)
             frame_idx = [i for i in range(start_frame, end_frame, sample_step)]
+            print(
+                f"[LoadVideo] fps={fps} total_frames={total_frames} "
+                f"sample_step={sample_step} sampled_frames={len(frame_idx)}",
+                flush=True,
+            )
             video = vr.get_batch(frame_idx).asnumpy()
+            print(f"[LoadVideo] loaded {len(frame_idx)} sampled frames", flush=True)
             return video
     
     def load_video_frames(self, video_path, video_fps, clip=None):
