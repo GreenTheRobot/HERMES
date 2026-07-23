@@ -169,7 +169,23 @@ class BaseVQA:
                 f"sample_step={sample_step} sampled_frames={len(frame_idx)}",
                 flush=True,
             )
-            video = vr.get_batch(frame_idx).asnumpy()
+            batch_size = 128
+            frame_batches = []
+            for offset in range(0, len(frame_idx), batch_size):
+                batch_indices = frame_idx[offset : offset + batch_size]
+                try:
+                    frame_batches.append(vr.get_batch(batch_indices).asnumpy())
+                except Exception as exc:
+                    print(
+                        f"[LoadVideo] batch decode failed at sampled frame "
+                        f"{offset}-{offset + len(batch_indices) - 1}: {exc}. "
+                        "Falling back to per-frame decode for this batch.",
+                        flush=True,
+                    )
+                    frame_batches.append(
+                        np.stack([vr[frame_index].asnumpy() for frame_index in batch_indices], axis=0)
+                    )
+            video = np.concatenate(frame_batches, axis=0)
             print(f"[LoadVideo] loaded {len(frame_idx)} sampled frames", flush=True)
             return video
     
