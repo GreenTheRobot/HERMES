@@ -53,7 +53,7 @@ def qwenvl_vispec_draft_latency_load_model(*args, **kwargs):
         raise ImportError(
             "Failed to import inference.qwenvl_vispec_draft_latency. "
             "The ViSpec draft latency backend requires Qwen dependencies and "
-            "the sibling ViSpec source tree."
+            "vendored HERMES ViSpec draft components."
         ) from exc
     return _load_model(*args, **kwargs)
 

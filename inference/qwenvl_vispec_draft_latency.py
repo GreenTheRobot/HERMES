@@ -1,5 +1,4 @@
 import json
-import sys
 import time
 from pathlib import Path
 
@@ -13,15 +12,11 @@ from inference.qwenvl_hermes import (
     load_model as load_qwenvl_hermes_model,
 )
 from inference.reindex_3d import contiguous_kv, get_cache_seq_len
+from inference.vispec_draft.cnets_ours import Model as ViSpecDraftModel
+from inference.vispec_draft.configs import EConfig
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_VISPEC_ROOT = _REPO_ROOT / "ViSpec"
-if _VISPEC_ROOT.exists() and str(_VISPEC_ROOT) not in sys.path:
-    sys.path.insert(0, str(_VISPEC_ROOT))
-
-from vispec.model.cnets_ours import Model as ViSpecDraftModel  # noqa: E402
-from vispec.model.configs import EConfig  # noqa: E402
+_VENDORED_VISPEC_ROOT = Path(__file__).resolve().parent / "vispec_draft"
 
 
 def _cuda_sync_if_needed(device):
@@ -44,9 +39,9 @@ def _default_spec_model_path(model_path):
 
 def _local_train_config_for_hidden_size(hidden_size):
     if hidden_size == 2048:
-        return _VISPEC_ROOT / "vispec" / "train" / "qwen2.5_vl_3B_config.json"
+        return _VENDORED_VISPEC_ROOT / "train" / "qwen2.5_vl_3B_config.json"
     if hidden_size == 3584:
-        return _VISPEC_ROOT / "vispec" / "train" / "qwen2.5_vl_7B_config.json"
+        return _VENDORED_VISPEC_ROOT / "train" / "qwen2.5_vl_7B_config.json"
     raise ValueError(f"Unsupported Qwen2.5-VL hidden size for ViSpec: {hidden_size}")
 
 

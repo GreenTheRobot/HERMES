@@ -512,6 +512,20 @@ qwen2.5_vl_7b_vispec_draft_latency
 
 它们复用 HERMES 原 Qwen2.5-VL 视频 KV 编码、压缩和回答流程；在每次正式回答前额外执行一次 ViSpec 草稿头 profile，并把结果写入 `results.csv` 的 `vispec_draft_profile` 字段。
 
+实现侧已经把 ViSpec 草稿层的最小源码依赖 vendor 到 HERMES 内部：
+
+```text
+HERMES/inference/vispec_draft/
+  cnets_ours.py
+  configs.py
+  choices.py
+  utils_c.py
+  train/qwen2.5_vl_3B_config.json
+  train/qwen2.5_vl_7B_config.json
+```
+
+因此部署时不再要求 HERMES 同级目录存在完整 `ViSpec/` 源码树。运行时仍需要 ViSpec 草稿头权重，可通过 `--vispec_spec_model_path` 指向本地权重目录，或使用默认 Hugging Face repo 自动下载。
+
 ### 8.1 后端参数
 
 以下参数可通过 `video_qa/run_infer.py` 或 `video_qa/hermes_vqa.py` 传入：
