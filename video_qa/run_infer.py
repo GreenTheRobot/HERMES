@@ -76,10 +76,14 @@ def run_eval(args, config):
     save_dir = f"results/{args.model}/{args.dataset}/fps{args.sample_fps}-kv{args.kv_size}"
     streaming = config["streaming"]
     results_path = f"{save_dir}/results.csv"
+    default_gpus_per_chunk = 4 if args.model in {'llava_ov_72b', 'llava_ov_72b_slidingwindow'} else 1
+    gpus_per_chunk = args.gpus_per_chunk or default_gpus_per_chunk
+    if gpus_per_chunk <= 0:
+        raise ValueError("--gpus_per_chunk must be a positive integer.")
+
     gpu_ids = None
     if args.gpu_ids:
         gpu_ids = [gpu_id.strip() for gpu_id in args.gpu_ids.split(",") if gpu_id.strip()]
-        gpus_per_chunk = 4 if args.model in {'llava_ov_72b', 'llava_ov_72b_slidingwindow'} else 1
         required_gpus = num_chunks * gpus_per_chunk
         if len(gpu_ids) < required_gpus:
             raise ValueError(
@@ -129,13 +133,22 @@ def run_eval(args, config):
                     )
             if args.use_flash_attention:
                 cmd.extend(["--use_flash_attention", "true"])
-            if args.model in {'llava_ov_72b', 'llava_ov_72b_slidingwindow'}:
-                if gpu_ids:
-                    device = ",".join(gpu_ids[4 * idx : 4 * idx + 4])
-                else:
-                    device = f'{4*idx},{4*idx+1},{4*idx+2},{4*idx+3}'
+            if args.max_memory_per_gpu:
+                cmd.extend(["--max_memory_per_gpu", args.max_memory_per_gpu])
+            if args.disallow_cpu_offload:
+                cmd.extend(["--disallow_cpu_offload", "true"])
+            if args.print_device_map:
+                cmd.extend(["--print_device_map", "true"])
+            if args.load_only:
+                cmd.extend(["--load_only", "true"])
+            if gpu_ids:
+                start = gpus_per_chunk * idx
+                end = start + gpus_per_chunk
+                device = ",".join(gpu_ids[start:end])
             else:
-                device = gpu_ids[idx] if gpu_ids else str(idx)
+                start = gpus_per_chunk * idx
+                end = start + gpus_per_chunk
+                device = ",".join(str(device_idx) for device_idx in range(start, end))
             p = multiprocessing.Process(target=exec, args=(cmd, True, device))
             processes.append(p)
             p.start()
@@ -143,6 +156,12 @@ def run_eval(args, config):
         failed_chunks = []
         for idx, p in enumerate(processes):
             p.join()
+            if p.exitcode != 0:
+                failed_chunks.append(idx)
+                print(f"WARNING: Chunk {idx} failed with exit code {p.exitcode}!")
+                continue
+            if args.load_only:
+                continue
             chunk_file = f"{save_dir}/{num_chunks}_{idx}.csv"
             if not os.path.exists(chunk_file):
                 failed_chunks.append(idx)
@@ -152,6 +171,9 @@ def run_eval(args, config):
             raise RuntimeError(
                 f"The following chunks failed: {failed_chunks}. Please rerun them manually."
             )
+
+        if args.load_only:
+            return
 
         exec(f"> {results_path}")
         for idx in range(num_chunks):
@@ -242,6 +264,12 @@ if __name__ == "__main__":
         help="Comma-separated physical GPU ids assigned to chunks, e.g. 1,3.",
     )
     parser.add_argument(
+        "--gpus_per_chunk",
+        type=int,
+        default=None,
+        help="Number of visible GPUs assigned to each inference chunk. Defaults to 4 for LLaVA 72B and 1 otherwise.",
+    )
+    parser.add_argument(
         "--skip_token_timing_analysis",
         action="store_true",
         help="Skip generation of token timing detail and summary CSV files.",
@@ -255,6 +283,27 @@ if __name__ == "__main__":
         "--use_flash_attention",
         action="store_true",
         help="Use flash_attention_2 for Qwen2.5-VL backends. Defaults to eager attention.",
+    )
+    parser.add_argument(
+        "--max_memory_per_gpu",
+        type=str,
+        default=None,
+        help="Optional per-GPU max_memory for Qwen2.5-VL model parallel loading, e.g. 72GiB.",
+    )
+    parser.add_argument(
+        "--disallow_cpu_offload",
+        action="store_true",
+        help="Fail Qwen2.5-VL loading if HuggingFace assigns any module to CPU or disk.",
+    )
+    parser.add_argument(
+        "--print_device_map",
+        action="store_true",
+        help="Print the full HuggingFace device map for Qwen2.5-VL model loading.",
+    )
+    parser.add_argument(
+        "--load_only",
+        action="store_true",
+        help="Load model subprocesses and exit before inference.",
     )
     parser.add_argument(
         "--timing_detail_prefix",

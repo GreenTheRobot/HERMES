@@ -352,6 +352,36 @@ def work(QA_CLASS):
         default=False,
         help="Use flash_attention_2 for Qwen2.5-VL backends. Defaults to eager attention.",
     )
+    parser.add_argument(
+        "--max_memory_per_gpu",
+        type=str,
+        default=None,
+        help="Optional per-GPU max_memory for Qwen2.5-VL model parallel loading, e.g. 72GiB.",
+    )
+    parser.add_argument(
+        "--disallow_cpu_offload",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=False,
+        help="Raise an error if the Qwen hf_device_map contains CPU or disk offload.",
+    )
+    parser.add_argument(
+        "--print_device_map",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=False,
+        help="Print full HuggingFace device map for Qwen2.5-VL model loading.",
+    )
+    parser.add_argument(
+        "--load_only",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=False,
+        help="Load the model and exit before reading annotations or running inference.",
+    )
     parser.add_argument("--vispec_spec_model_path", type=str, default=None)
     parser.add_argument("--vispec_depth", type=int, default=3)
     parser.add_argument("--vispec_top_k", type=int, default=8)
@@ -403,7 +433,14 @@ def work(QA_CLASS):
         "sample_fps": args.sample_fps,
     }
     if args.model.startswith("qwen2.5_vl_"):
-        load_kwargs["use_flash_attention"] = args.use_flash_attention
+        load_kwargs.update(
+            {
+                "use_flash_attention": args.use_flash_attention,
+                "max_memory_per_gpu": args.max_memory_per_gpu,
+                "disallow_cpu_offload": args.disallow_cpu_offload,
+                "print_device_map": args.print_device_map,
+            }
+        )
     if args.model.endswith("_vispec_draft_latency"):
         load_kwargs.update(
             {
@@ -422,6 +459,9 @@ def work(QA_CLASS):
             }
         )
     videoqa_model, videoqa_processor = load_func(**load_kwargs)
+    if args.load_only:
+        logger.info("load_only=True; model loaded successfully, exiting before inference.")
+        return
 
     # Load ground truth file
     anno = json.load(open(args.anno_path))

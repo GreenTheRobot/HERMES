@@ -729,6 +729,9 @@ def load_model(
     vispec_ignore_hermes_summary=True,
     vispec_source_keep_policy="union_all",
     use_flash_attention=False,
+    max_memory_per_gpu=None,
+    disallow_cpu_offload=False,
+    print_device_map=False,
 ):
     model, processor = load_qwenvl_hermes_model(
         model_path=model_path,
@@ -738,6 +741,9 @@ def load_model(
         device=device,
         sample_fps=sample_fps,
         use_flash_attention=use_flash_attention,
+        max_memory_per_gpu=max_memory_per_gpu,
+        disallow_cpu_offload=disallow_cpu_offload,
+        print_device_map=print_device_map,
     )
     model.__class__ = QwenVL_ViSpecDraftLatency
     model._init_vispec_draft_latency_backend(

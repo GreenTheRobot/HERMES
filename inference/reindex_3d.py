@@ -68,15 +68,22 @@ def compute_cos_sin_for_positions(llm, seq_len: int, position_ids_3d: torch.Tens
     if hidden_size is None:
         hidden_size = 4096
 
+    rotary_device = device
+    if rotary_emb is not None:
+        for tensor in list(rotary_emb.parameters(recurse=True)) + list(rotary_emb.buffers(recurse=True)):
+            if tensor.device.type != "meta":
+                rotary_device = tensor.device
+                break
+
     # 确保 position_ids_3d 是 [3, 1, seq_len] 格式
     if position_ids_3d.dim() == 2:
         position_ids_3d = position_ids_3d.unsqueeze(1)  # [3, seq_len] -> [3, 1, seq_len]
     
-    pos = position_ids_3d.to(device)
-    dummy_h = torch.zeros((1, seq_len, hidden_size), device=device, dtype=dtype)
+    pos = position_ids_3d.to(rotary_device)
+    dummy_h = torch.zeros((1, seq_len, hidden_size), device=rotary_device, dtype=dtype)
     cos, sin = rotary_emb(dummy_h, pos)
-    cos = cos.to(dtype)
-    sin = sin.to(dtype)
+    cos = cos.to(device=device, dtype=dtype)
+    sin = sin.to(device=device, dtype=dtype)
     return cos, sin
 
 def rotary_delta(cos_old, sin_old, cos_new, sin_new):

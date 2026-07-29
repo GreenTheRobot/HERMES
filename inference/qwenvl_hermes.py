@@ -10,11 +10,17 @@ from inference.abstract_hermes import Abstract_Hermes
 from inference.reindex_3d import (
     get_cache_seq_len,
     contiguous_kv,
-    _get_rotary_module,
     _get_mrope_section,
     compute_cos_sin_for_positions,
     rotary_delta,
     apply_rotary_delta_to_keys_only,
+)
+from inference.qwenvl_model_parallel import (
+    build_max_memory,
+    get_input_device,
+    get_layer_device,
+    log_model_parallel_state,
+    sync_cuda_devices,
 )
 
 
@@ -108,11 +114,21 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         if not isinstance(self.kv_cache, DynamicCache):
             self.kv_cache = DynamicCache.from_legacy_cache(self.kv_cache)
 
-    def _sanitize_keep_indices(self, keep_indices_1d: torch.Tensor, seq_len: int) -> torch.Tensor:
-        keep_indices_1d = keep_indices_1d.to(self.device)
+    def _input_device(self):
+        return get_input_device(self, self.device)
+
+    def _layer_device(self, layer_idx: int):
+        return get_layer_device(self, layer_idx, self.device)
+
+    def _sync_cuda_devices(self):
+        sync_cuda_devices()
+
+    def _sanitize_keep_indices(self, keep_indices_1d: torch.Tensor, seq_len: int, device=None) -> torch.Tensor:
+        device = device or self.device
+        keep_indices_1d = keep_indices_1d.to(device)
         keep_indices_1d = keep_indices_1d[(keep_indices_1d >= 0) & (keep_indices_1d < seq_len)]
         if keep_indices_1d.numel() == 0:
-            return torch.tensor([0], device=self.device)
+            return torch.tensor([0], device=device)
         keep_indices_1d = torch.unique(keep_indices_1d, sorted=True)
         return keep_indices_1d
 
@@ -134,7 +150,7 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         self._hook_handles = []
 
     def _append_position_ids_layer(self, layer_idx: int, start_per_dim: list, length: int):
-        device = self.device
+        device = self._layer_device(layer_idx)
         new_pos = torch.zeros((3, length), device=device, dtype=torch.float32)
         for dim in range(3):
             new_pos[dim, :] = torch.arange(start_per_dim[dim], start_per_dim[dim] + length, device=device, dtype=torch.float32)
@@ -142,16 +158,22 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         if self._position_ids_cache[layer_idx] is None:
             self._position_ids_cache[layer_idx] = new_pos
         else:
+            if self._position_ids_cache[layer_idx].device != device:
+                self._position_ids_cache[layer_idx] = self._position_ids_cache[layer_idx].to(device)
             self._position_ids_cache[layer_idx] = torch.cat(
                 [self._position_ids_cache[layer_idx], new_pos], dim=1
             )
 
     def _append_position_ids_layer_explicit(self, layer_idx: int, new_pos: torch.Tensor):
+        device = self._layer_device(layer_idx)
+        new_pos = new_pos.to(device)
         if self._position_ids_cache[layer_idx] is None:
-            self._position_ids_cache[layer_idx] = new_pos.to(self.device)
+            self._position_ids_cache[layer_idx] = new_pos
         else:
+            if self._position_ids_cache[layer_idx].device != device:
+                self._position_ids_cache[layer_idx] = self._position_ids_cache[layer_idx].to(device)
             self._position_ids_cache[layer_idx] = torch.cat(
-                [self._position_ids_cache[layer_idx], new_pos.to(self.device)], dim=1
+                [self._position_ids_cache[layer_idx], new_pos], dim=1
             )
 
     def _get_cache_seq_len_per_layer(self) -> list:
@@ -177,29 +199,34 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
                 offsets.append(0)
         return offsets
 
-    def _build_position_ids_3d_for_text(self, global_offset: int, q_len: int, batch: int) -> torch.Tensor:
+    def _build_position_ids_3d_for_text(self, global_offset: int, q_len: int, batch: int, device=None) -> torch.Tensor:
         """[3, batch, q_len] -- text tokens use identical position across all 3 dims."""
-        pos_1d = torch.arange(global_offset, global_offset + q_len, device=self.device, dtype=torch.float32)
+        device = device or self.device
+        pos_1d = torch.arange(global_offset, global_offset + q_len, device=device, dtype=torch.float32)
         pos_2d = pos_1d.unsqueeze(0).expand(batch, -1)
         pos_3d = pos_2d.unsqueeze(0).expand(3, -1, -1).clone()
         return pos_3d
 
-    def _build_position_ids_3d_for_vision(self, grid_pos_ids: torch.Tensor, batch: int) -> torch.Tensor:
+    def _build_position_ids_3d_for_vision(self, grid_pos_ids: torch.Tensor, batch: int, device=None) -> torch.Tensor:
         """[3, batch, q_len] -- vision tokens use grid-based 3D positions."""
+        if device is not None:
+            grid_pos_ids = grid_pos_ids.to(device)
         pos_3d = grid_pos_ids.unsqueeze(1).expand(3, batch, -1).clone()
         return pos_3d
 
     @torch.inference_mode()
     def _shrink_positions_and_rerotate_keys(self, keep_indices_per_layer):
-        device = self.device
         curr_lens = self._get_cache_seq_len_per_layer()
 
         for layer_idx in range(self.num_layers):
+            layer_device = self._layer_device(layer_idx)
             layer_len = curr_lens[layer_idx] if layer_idx < len(curr_lens) else curr_lens[0]
             if (self._position_ids_cache[layer_idx] is None or
                 self._position_ids_cache[layer_idx].shape[1] != layer_len):
-                pos = torch.arange(layer_len, device=device, dtype=torch.float32)
+                pos = torch.arange(layer_len, device=layer_device, dtype=torch.float32)
                 self._position_ids_cache[layer_idx] = pos.unsqueeze(0).expand(3, -1).clone()
+            elif self._position_ids_cache[layer_idx].device != layer_device:
+                self._position_ids_cache[layer_idx] = self._position_ids_cache[layer_idx].to(layer_device)
 
         max_pos_limit = getattr(self.language_model.config, "max_position_embeddings", 128000)
         compact_threshold = max_pos_limit - 1024
@@ -223,22 +250,26 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         new_kv_cache = []
 
         for layer_idx, (k_layer, v_layer) in enumerate(self.kv_cache):
+            layer_device = k_layer.device
             keep_indices_layer = keep_indices_per_layer[layer_idx]
             if not isinstance(keep_indices_layer, torch.Tensor):
-                keep_indices_layer = torch.as_tensor(keep_indices_layer, device=device)
+                keep_indices_layer = torch.as_tensor(keep_indices_layer, device=layer_device)
+            else:
+                keep_indices_layer = keep_indices_layer.to(layer_device)
 
             seq_len_layer = k_layer.shape[2]
-            safe_idx = self._sanitize_keep_indices(keep_indices_layer, seq_len_layer)
+            safe_idx = self._sanitize_keep_indices(keep_indices_layer, seq_len_layer, layer_device)
 
             if safe_idx.numel() == 0:
                 logger.warning(f"Layer {layer_idx}: After sanitization, keep_indices is empty; keeping first token")
-                safe_idx = torch.tensor([0], device=device)
+                safe_idx = torch.tensor([0], device=layer_device)
 
             is_long_term = (layer_idx >= self.long_term_threshold)
 
             k_kept = torch.index_select(k_layer, dim=2, index=safe_idx)
             v_kept = torch.index_select(v_layer, dim=2, index=safe_idx)
-            old_pos_kept = old_position_ids_cache[layer_idx][:, safe_idx]
+            old_pos_layer = old_position_ids_cache[layer_idx].to(layer_device)
+            old_pos_kept = old_pos_layer[:, safe_idx]
 
             if should_compact:
                 new_pos_kept = old_pos_kept.clone()
@@ -248,19 +279,19 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
                     num_video_kept = (safe_idx >= text_offset).sum().item()
 
                     if num_video_kept > 0:
-                        video_indices_in_kept = torch.arange(num_text_kept, new_pos_kept.shape[1], device=device)
+                        video_indices_in_kept = torch.arange(num_text_kept, new_pos_kept.shape[1], device=layer_device)
                         old_video_pos = old_pos_kept[:, video_indices_in_kept]
                         for dim in range(3):
                             old_vals = old_video_pos[dim]
                             unique_vals, inverse_indices = torch.unique(old_vals, sorted=True, return_inverse=True)
-                            compact_map = torch.arange(len(unique_vals), device=device) + text_offset
+                            compact_map = torch.arange(len(unique_vals), device=layer_device) + text_offset
                             new_pos_kept[dim, video_indices_in_kept] = compact_map[inverse_indices].to(new_pos_kept.dtype)
 
                 cos_old, sin_old = compute_cos_sin_for_positions(
-                    self.language_model, len(safe_idx), old_pos_kept, dtype, device
+                    self.language_model, len(safe_idx), old_pos_kept, dtype, layer_device
                 )
                 cos_new, sin_new = compute_cos_sin_for_positions(
-                    self.language_model, len(safe_idx), new_pos_kept, dtype, device
+                    self.language_model, len(safe_idx), new_pos_kept, dtype, layer_device
                 )
                 cos_delta, sin_delta = rotary_delta(cos_old, sin_old, cos_new, sin_new)
 
@@ -275,7 +306,7 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
                 k_kept_final = k_kept
 
             if is_long_term:
-                mask = torch.ones(seq_len_layer, dtype=torch.bool, device=device)
+                mask = torch.ones(seq_len_layer, dtype=torch.bool, device=layer_device)
                 mask[safe_idx] = False
                 prune_indices = torch.nonzero(mask).squeeze(1)
 
@@ -285,17 +316,17 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
                     v_summary = v_pruned.mean(dim=2, keepdim=True)
 
-                    old_pos_pruned = old_position_ids_cache[layer_idx][:, prune_indices]
+                    old_pos_pruned = old_pos_layer[:, prune_indices]
 
                     summary_pos_id = new_pos_kept.max().item() + 1
-                    summary_pos_tensor = torch.tensor([summary_pos_id], device=device, dtype=torch.float32).repeat(3, 1)
+                    summary_pos_tensor = torch.tensor([summary_pos_id], device=layer_device, dtype=torch.float32).repeat(3, 1)
                     target_pos_pruned = summary_pos_tensor.expand(3, old_pos_pruned.shape[1])
 
                     cos_old, sin_old = compute_cos_sin_for_positions(
-                        self.language_model, old_pos_pruned.shape[1], old_pos_pruned, dtype, device
+                        self.language_model, old_pos_pruned.shape[1], old_pos_pruned, dtype, layer_device
                     )
                     cos_new, sin_new = compute_cos_sin_for_positions(
-                        self.language_model, target_pos_pruned.shape[1], target_pos_pruned, dtype, device
+                        self.language_model, target_pos_pruned.shape[1], target_pos_pruned, dtype, layer_device
                     )
                     cos_delta, sin_delta = rotary_delta(cos_old, sin_old, cos_new, sin_new)
 
@@ -356,11 +387,14 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
     @torch.inference_mode()
     def encode_init_prompt(self):
+        input_device = self._input_device()
         if not isinstance(self.init_prompt_ids, torch.Tensor):
-            self.init_prompt_ids = torch.as_tensor(self.init_prompt_ids, device=self.device)
+            self.init_prompt_ids = torch.as_tensor(self.init_prompt_ids, device=input_device)
+        else:
+            self.init_prompt_ids = self.init_prompt_ids.to(input_device)
 
         seq_len = self.init_prompt_ids.shape[-1]
-        pos_1d = torch.arange(seq_len, device=self.device, dtype=torch.float32)
+        pos_1d = torch.arange(seq_len, device=input_device, dtype=torch.float32)
         position_ids_3d = pos_1d.unsqueeze(0).unsqueeze(0).expand(3, 1, -1).clone()
 
         output = self.language_model(
@@ -377,21 +411,24 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
         curr_lens = self._get_cache_seq_len_per_layer()
         for layer_idx in range(self.num_layers):
-            pos = torch.arange(curr_lens[layer_idx], device=self.device, dtype=torch.float32)
+            layer_device = self._layer_device(layer_idx)
+            pos = torch.arange(curr_lens[layer_idx], device=layer_device, dtype=torch.float32)
             self._position_ids_cache[layer_idx] = pos.unsqueeze(0).expand(3, -1).clone()
 
     @torch.inference_mode()
     def encode_video_chunk(self, video_chunk):
+        input_device = self._input_device()
         if video_chunk is None or (hasattr(video_chunk, "shape") and video_chunk.shape[0] == 0):
             return
 
         if len(video_chunk.shape) == 4 and video_chunk.shape[-1] == 3:
             video_chunk = video_chunk.permute(0, 3, 1, 2)
 
-        video_input = self.processor(text=[""], videos=video_chunk, return_tensors="pt").to(self.device, self.dtype)
+        video_input = self.processor(text=[""], videos=video_chunk, return_tensors="pt").to(input_device, self.dtype)
         pixel_values_videos = video_input["pixel_values_videos"]
         video_grid_thw = video_input["video_grid_thw"]
         video_features = self.get_video_features(pixel_values_videos, video_grid_thw)[0].unsqueeze(0)
+        input_device = video_features.device
 
         self._ensure_dynamic_cache()
 
@@ -406,7 +443,7 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
             offset=base_offset,
             vision_config=self.config.vision_config,
             sample_fps=self.sample_fps,
-        ).to(self.device)
+        ).to(input_device)
 
         self._layer_position_ids.clear()
         for layer_idx in range(self.num_layers):
@@ -414,10 +451,11 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
             current_layer_pos = grid_pos_ids.clone()
             if layer_offset != base_offset:
                 current_layer_pos = current_layer_pos + (layer_offset - base_offset)
-            position_ids_3d = self._build_position_ids_3d_for_vision(current_layer_pos, batch)
+            layer_device = self._layer_device(layer_idx)
+            position_ids_3d = self._build_position_ids_3d_for_vision(current_layer_pos, batch, device=layer_device)
             self._layer_position_ids[layer_idx] = position_ids_3d
 
-        default_position_ids_3d = self._build_position_ids_3d_for_vision(grid_pos_ids, batch)
+        default_position_ids_3d = self._build_position_ids_3d_for_vision(grid_pos_ids, batch, device=input_device)
 
         out = self.language_model(
             inputs_embeds=video_features,
@@ -461,11 +499,12 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         return budget_per_layer
 
     def _compute_attention_scores_manually(self, input_ids, past_key_values):
-        device = self.device
+        input_device = self._input_device()
         global_offset_per_layer = self._get_next_global_offset_per_layer()
         q_len = input_ids.shape[1]
         batch = input_ids.shape[0]
 
+        input_ids = input_ids.to(input_device)
         inputs_embeds = self.get_input_embeddings()(input_ids)
 
         config = self.language_model.config
@@ -473,7 +512,6 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         num_heads = config.num_attention_heads
         num_key_value_heads = config.num_key_value_heads
         head_dim = config.hidden_size // num_heads
-        hidden_size = config.hidden_size
 
         attention_weights_list = []
         hidden_states = inputs_embeds
@@ -481,13 +519,15 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         for layer_idx in range(num_layers):
             layer = self.language_model.layers[layer_idx]
             past_k, past_v = past_key_values[layer_idx]
+            layer_device = past_k.device
+            hidden_states_layer = hidden_states.to(layer_device)
 
             layer_offset = global_offset_per_layer[layer_idx]
-            position_ids_3d = torch.zeros((3, 1, q_len), device=device, dtype=torch.float32)
+            position_ids_3d = torch.zeros((3, 1, q_len), device=layer_device, dtype=torch.float32)
             for dim in range(3):
-                position_ids_3d[dim, 0, :] = torch.arange(layer_offset, layer_offset + q_len, device=device)
+                position_ids_3d[dim, 0, :] = torch.arange(layer_offset, layer_offset + q_len, device=layer_device)
 
-            hidden_states_norm = layer.input_layernorm(hidden_states)
+            hidden_states_norm = layer.input_layernorm(hidden_states_layer)
 
             attn = layer.self_attn
 
@@ -500,9 +540,9 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
             value_states = attn.v_proj(hidden_states_norm)
             value_states = value_states.view(batch, q_len, num_key_value_heads, head_dim).transpose(1, 2)
 
-            rotary_emb = _get_rotary_module(self.language_model)
-            dummy_h = torch.zeros((1, q_len, hidden_size), device=device, dtype=hidden_states.dtype)
-            cos, sin = rotary_emb(dummy_h, position_ids_3d)
+            cos, sin = compute_cos_sin_for_positions(
+                self.language_model, q_len, position_ids_3d, hidden_states_layer.dtype, layer_device
+            )
 
             query_states, key_states = apply_multimodal_rotary_pos_emb(
                 query_states, key_states, cos, sin, self._mrope_section
@@ -523,7 +563,6 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         return attention_weights_list
 
     def prune_kv_cache_by_attention(self, attn_weights_local, attn_weights_global, attn_weights_mixed, num_keep=3000):
-        device = self.device
         visual_start_idx = self.visual_start_idx
         num_layers = len(attn_weights_local)
 
@@ -569,7 +608,8 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
             if layer_type == 'long-term':
                 layer_budget = max(0, layer_budget - 1)
 
-            positions = torch.arange(num_visual_tokens, device=device, dtype=torch.float32)
+            score_device = visual_attn_weights.device
+            positions = torch.arange(num_visual_tokens, device=score_device, dtype=torch.float32)
             time_distances = (num_visual_tokens - 1 - positions) / max(num_visual_tokens - 1, 1)
 
             recency_weights = torch.exp(-k * time_distances)
@@ -581,7 +621,7 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
             raw_score = attn_norm * (1 - layer_recency_alpha) + recency_norm * layer_recency_alpha
 
-            layer_raw_scores.append(raw_score)
+            layer_raw_scores.append(raw_score.detach().float().cpu())
             layer_configs.append({
                 'budget': min(layer_budget, num_visual_tokens),
                 'layer_type': layer_type,
@@ -625,7 +665,7 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
             topk_indices_absolute_sorted = torch.sort(topk_indices_absolute)[0]
 
             keep_indices = torch.cat([
-                torch.arange(start_idx, device=device),
+                torch.arange(start_idx, dtype=torch.long),
                 topk_indices_absolute_sorted
             ]).tolist()
 
@@ -635,7 +675,7 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
     @torch.inference_mode()
     def pseudo_forward(self, local_question=None, global_question=None):
-        device = self.device
+        device = self._input_device()
 
         if local_question is None:
             local_question = "What is happening in the video?"
@@ -643,7 +683,7 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
             global_question = "What is the main topic of the video?"
 
         local_input_ids = self.processor.tokenizer(local_question).input_ids
-        local_input_ids = torch.as_tensor([local_input_ids], device=device, dtype=torch.int)
+        local_input_ids = torch.as_tensor([local_input_ids], device=device, dtype=torch.long)
 
         global_offset_per_layer = self._get_next_global_offset_per_layer()
         q_len_local = local_input_ids.shape[1]
@@ -651,10 +691,12 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
         self._layer_position_ids.clear()
         for layer_idx in range(self.num_layers):
-            position_ids_3d = self._build_position_ids_3d_for_text(global_offset_per_layer[layer_idx], q_len_local, batch)
+            position_ids_3d = self._build_position_ids_3d_for_text(
+                global_offset_per_layer[layer_idx], q_len_local, batch, device=self._layer_device(layer_idx)
+            )
             self._layer_position_ids[layer_idx] = position_ids_3d
 
-        position_ids_local_3d = self._build_position_ids_3d_for_text(global_offset_per_layer[0], q_len_local, batch)
+        position_ids_local_3d = self._build_position_ids_3d_for_text(global_offset_per_layer[0], q_len_local, batch, device=device)
 
         use_flash_attn = (hasattr(self.language_model.config, '_attn_implementation') and
                         self.language_model.config._attn_implementation in ["flash_attention_2", "sdpa"])
@@ -672,16 +714,18 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
             attn_weights_local = out_local.attentions
 
         global_input_ids = self.processor.tokenizer(global_question).input_ids
-        global_input_ids = torch.as_tensor([global_input_ids], device=device, dtype=torch.int)
+        global_input_ids = torch.as_tensor([global_input_ids], device=device, dtype=torch.long)
 
         q_len_global = global_input_ids.shape[1]
 
         self._layer_position_ids.clear()
         for layer_idx in range(self.num_layers):
-            position_ids_3d = self._build_position_ids_3d_for_text(global_offset_per_layer[layer_idx], q_len_global, batch)
+            position_ids_3d = self._build_position_ids_3d_for_text(
+                global_offset_per_layer[layer_idx], q_len_global, batch, device=self._layer_device(layer_idx)
+            )
             self._layer_position_ids[layer_idx] = position_ids_3d
 
-        position_ids_global_3d = self._build_position_ids_3d_for_text(global_offset_per_layer[0], q_len_global, batch)
+        position_ids_global_3d = self._build_position_ids_3d_for_text(global_offset_per_layer[0], q_len_global, batch, device=device)
 
         if use_flash_attn:
             attn_weights_global = self._compute_attention_scores_manually(global_input_ids, self.kv_cache)
@@ -697,16 +741,18 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
         mixed_question = local_question + "; " + global_question
         mixed_input_ids = self.processor.tokenizer(mixed_question).input_ids
-        mixed_input_ids = torch.as_tensor([mixed_input_ids], device=device, dtype=torch.int)
+        mixed_input_ids = torch.as_tensor([mixed_input_ids], device=device, dtype=torch.long)
 
         q_len_mixed = mixed_input_ids.shape[1]
 
         self._layer_position_ids.clear()
         for layer_idx in range(self.num_layers):
-            position_ids_3d = self._build_position_ids_3d_for_text(global_offset_per_layer[layer_idx], q_len_mixed, batch)
+            position_ids_3d = self._build_position_ids_3d_for_text(
+                global_offset_per_layer[layer_idx], q_len_mixed, batch, device=self._layer_device(layer_idx)
+            )
             self._layer_position_ids[layer_idx] = position_ids_3d
 
-        position_ids_mixed_3d = self._build_position_ids_3d_for_text(global_offset_per_layer[0], q_len_mixed, batch)
+        position_ids_mixed_3d = self._build_position_ids_3d_for_text(global_offset_per_layer[0], q_len_mixed, batch, device=device)
 
         if use_flash_attn:
             attn_weights_mixed = self._compute_attention_scores_manually(mixed_input_ids, self.kv_cache)
@@ -741,7 +787,7 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
     @torch.inference_mode()
     def question_answering(self, input_text, max_new_tokens=128, temperature=0, repetition_penalty=1.1, pseudo_forward=False):
-        device = self.device
+        device = self._input_device()
         stop_token_ids = [self.processor.tokenizer.eos_token_id]
         output_ids = []
 
@@ -751,7 +797,7 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
         self.last_token_inference_times = []
         if input_ids.is_cuda:
-            torch.cuda.synchronize(device)
+            self._sync_cuda_devices()
         prefill_start_time = time.perf_counter()
 
         self._ensure_dynamic_cache()
@@ -764,10 +810,12 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
         self._layer_position_ids.clear()
         for layer_idx in range(self.num_layers):
-            position_ids_3d = self._build_position_ids_3d_for_text(global_offset_prefill[layer_idx], q_len_prefill, batch)
+            position_ids_3d = self._build_position_ids_3d_for_text(
+                global_offset_prefill[layer_idx], q_len_prefill, batch, device=self._layer_device(layer_idx)
+            )
             self._layer_position_ids[layer_idx] = position_ids_3d
 
-        position_ids_3d = self._build_position_ids_3d_for_text(global_offset_prefill[0], q_len_prefill, batch)
+        position_ids_3d = self._build_position_ids_3d_for_text(global_offset_prefill[0], q_len_prefill, batch, device=inputs_embeds.device)
 
         out = self.language_model(
             inputs_embeds=inputs_embeds,
@@ -815,7 +863,7 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
             if step == 0:
                 if input_ids.is_cuda:
-                    torch.cuda.synchronize(device)
+                    self._sync_cuda_devices()
                 token_latency = time.perf_counter() - prefill_start_time
                 self.last_token_inference_times.append(
                     {
@@ -857,13 +905,15 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
             self._layer_position_ids.clear()
             for layer_idx in range(self.num_layers):
-                pos_step_3d = self._build_position_ids_3d_for_text(curr_global_offset[layer_idx], 1, 1)
+                pos_step_3d = self._build_position_ids_3d_for_text(
+                    curr_global_offset[layer_idx], 1, 1, device=self._layer_device(layer_idx)
+                )
                 self._layer_position_ids[layer_idx] = pos_step_3d
 
-            position_ids_3d = self._build_position_ids_3d_for_text(curr_global_offset[0], 1, 1)
+            position_ids_3d = self._build_position_ids_3d_for_text(curr_global_offset[0], 1, 1, device=device)
 
             if input_ids.is_cuda:
-                torch.cuda.synchronize(device)
+                self._sync_cuda_devices()
             decode_start_time = time.perf_counter()
             out = self.language_model(
                 input_ids=torch.as_tensor([[token]], device=device),
@@ -874,7 +924,7 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
             logits = self.lm_head(out.last_hidden_state)
             if input_ids.is_cuda:
-                torch.cuda.synchronize(device)
+                self._sync_cuda_devices()
             pending_decode_latency = time.perf_counter() - decode_start_time
             past_key_values = out.past_key_values
 
@@ -937,18 +987,28 @@ class QwenVL_Hermes(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
 def load_model(model_path='Qwen/Qwen2.5-VL-7B-Instruct',
                n_init=None, kv_size=None, streaming=True, device="cuda", sample_fps=1,
-               use_flash_attention=False):
+               use_flash_attention=False, max_memory_per_gpu=None,
+               disallow_cpu_offload=False, print_device_map=False):
     processor = Qwen2_5_VLProcessor.from_pretrained(model_path)
 
     system_prompt = '<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n'
     init_prompt_ids = processor.tokenizer(system_prompt, return_tensors="pt").input_ids.to(device)
 
     attn_implementation = "flash_attention_2" if use_flash_attention else "eager"
-    base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        model_path,
-        device_map="auto",
-        torch_dtype=torch.float16,
-        attn_implementation=attn_implementation,
+    max_memory = build_max_memory(max_memory_per_gpu)
+    load_kwargs = {
+        "device_map": "auto",
+        "torch_dtype": torch.float16,
+        "attn_implementation": attn_implementation,
+    }
+    if max_memory is not None:
+        load_kwargs["max_memory"] = max_memory
+    base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_path, **load_kwargs)
+    log_model_parallel_state(
+        base_model,
+        max_memory=max_memory,
+        print_device_map=print_device_map,
+        disallow_cpu_offload=disallow_cpu_offload,
     )
 
     model = QwenVL_Hermes.__new__(QwenVL_Hermes)
@@ -984,6 +1044,8 @@ def load_model(model_path='Qwen/Qwen2.5-VL-7B-Instruct',
     logger.info(f'n_init: {init_prompt_ids.shape[1] if n_init is None else n_init}')
     logger.info(f'kv_size: {kv_size}')
     logger.info(f'attn_implementation: {attn_implementation}')
+    logger.info(f'max_memory_per_gpu: {max_memory_per_gpu}')
+    logger.info(f'disallow_cpu_offload: {disallow_cpu_offload}')
 
     model.eval()
 
