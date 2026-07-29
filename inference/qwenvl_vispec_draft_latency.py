@@ -17,6 +17,7 @@ from inference.vispec_draft.configs import EConfig
 
 
 _VENDORED_VISPEC_ROOT = Path(__file__).resolve().parent / "vispec_draft"
+_HERMES_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _cuda_sync_if_needed(device):
@@ -28,8 +29,14 @@ def _cuda_sync_if_needed(device):
 def _default_spec_model_path(model_path):
     model_path_lower = str(model_path).lower()
     if "3b" in model_path_lower:
+        local_path = _HERMES_ROOT / "models" / "ViSpec-Qwen2.5-VL-3B-Instruct"
+        if local_path.exists():
+            return str(local_path)
         return "JLKang/ViSpec-Qwen2.5-VL-3B-Instruct"
     if "7b" in model_path_lower:
+        local_path = _HERMES_ROOT / "models" / "ViSpec-Qwen2.5-VL-7B-Instruct"
+        if local_path.exists():
+            return str(local_path)
         return "JLKang/ViSpec-Qwen2.5-VL-7B-Instruct"
     raise ValueError(
         "Cannot infer ViSpec draft head path for this base model. "
@@ -65,18 +72,13 @@ def _resolve_config_path(spec_model_path, hidden_size):
         if candidate.exists():
             return candidate
         return _local_train_config_for_hidden_size(hidden_size)
-    try:
-        return _hf_download(spec_model_path, "config.json")
-    except Exception as exc:
-        fallback = _local_train_config_for_hidden_size(hidden_size)
-        logger.warning(
-            "Falling back to local ViSpec architecture config %s after failing "
-            "to fetch %s/config.json: %s",
-            fallback,
-            spec_model_path,
-            exc,
-        )
-        return fallback
+    fallback = _local_train_config_for_hidden_size(hidden_size)
+    logger.info(
+        "Using vendored ViSpec architecture config %s for draft weights %s",
+        fallback,
+        spec_model_path,
+    )
+    return fallback
 
 
 def _load_spec_state_dict(spec_model_path):
@@ -726,6 +728,7 @@ def load_model(
     vispec_include_visual_rebuild_in_total=False,
     vispec_ignore_hermes_summary=True,
     vispec_source_keep_policy="union_all",
+    use_flash_attention=False,
 ):
     model, processor = load_qwenvl_hermes_model(
         model_path=model_path,
@@ -734,6 +737,7 @@ def load_model(
         streaming=streaming,
         device=device,
         sample_fps=sample_fps,
+        use_flash_attention=use_flash_attention,
     )
     model.__class__ = QwenVL_ViSpecDraftLatency
     model._init_vispec_draft_latency_backend(

@@ -70,6 +70,7 @@ python video_qa/run_infer.py \
 | `sample_fps` | 从原视频采样的帧率 |
 | `kv_size` | 每层最多保留的视频 KV token 数量，不含固定系统提示前缀 |
 | `gpu_ids` | 可选。逗号分隔的物理 GPU 编号，用于覆盖默认分配，例如 `1,3` |
+| `use_flash_attention` | 可选。仅对 Qwen2.5-VL 后端生效；默认关闭，显式传入时使用 `flash_attention_2` |
 | `only_eval` | 跳过推理，直接评测已有结果 |
 
 ### 2.2 实验调度入口：`video_qa/run_infer.py`
@@ -135,6 +136,55 @@ python video_qa/run_infer.py \
 
 72B 模型每个 chunk 需要 4 张 GPU，因此 `--num_chunks 2 --gpu_ids 0,1,2,3,4,5,6,7`
 会让 chunk 0 使用 `0,1,2,3`，chunk 1 使用 `4,5,6,7`。
+
+### 2.4 Qwen2.5-VL Attention 后端
+
+Qwen2.5-VL 后端现在默认强制使用 eager attention：
+
+```python
+attn_implementation = "eager"
+```
+
+这样可以避免 Transformers 根据环境自动切到 Flash Attention/SDPA，使不同实验的 attention 后端更可控。默认关闭时直接运行普通命令即可：
+
+```bash
+python video_qa/run_infer.py \
+    --num_chunks 1 \
+    --model qwen2.5_vl_32b \
+    --dataset rvs_movie \
+    --sample_fps 0.5 \
+    --kv_size 4000 \
+    --debug true \
+    --skip_eval
+```
+
+如需显式开启 Flash Attention 2，增加 `--use_flash_attention`：
+
+```bash
+python video_qa/run_infer.py \
+    --num_chunks 1 \
+    --model qwen2.5_vl_32b \
+    --dataset rvs_movie \
+    --sample_fps 0.5 \
+    --kv_size 4000 \
+    --debug true \
+    --skip_eval \
+    --use_flash_attention
+```
+
+模型加载日志会打印实际后端：
+
+```text
+attn_implementation: eager
+```
+
+或：
+
+```text
+attn_implementation: flash_attention_2
+```
+
+该开关由 `video_qa/run_infer.py` 传给每个 `video_qa/hermes_vqa.py` 子进程，再由 `video_qa/base.py` 传入 Qwen 的 `load_model()`。HERMES、Sliding Window 和 ViSpec draft latency 的 Qwen 后端共用同一个开关。
 
 ## 3. 主调用链
 
@@ -273,6 +323,8 @@ work(HermesVQA)
 
 修改通用打分策略时，通常需要同步修改两个后端。修改位置编码时则应分别处理，不能直接复制 LLaVA 的 1D 实现。
 
+Qwen 的 `load_model()` 接收 `use_flash_attention`。默认值为 `False`，加载基础模型时传入 `attn_implementation="eager"`；当命令行指定 `--use_flash_attention` 时，才传入 `attn_implementation="flash_attention_2"`。如果启用该模式，服务器环境必须安装兼容当前 PyTorch/CUDA/Transformers 版本的 `flash-attn`。
+
 ## 7. KV 压缩入口
 
 核心算法集中在两个后端同名的 `prune_kv_cache_by_attention()` 中。
@@ -401,6 +453,7 @@ work(HermesVQA)
 | 帧级或事件级选择 | `prune_kv_cache_by_attention()` 的 Top-K 前后 |
 | 多摘要 token | `_shrink_positions_and_rerotate_keys()` |
 | 修改 lazy/eager 重索引 | `_shrink_positions_and_rerotate_keys()` 和 `reindex_*.py` |
+| 修改 Qwen attention 后端 | `run_infer.py` 的 `--use_flash_attention`、`base.py` 的参数透传、`qwenvl_*` 的 `load_model()` |
 | 接入新模型后端 | 新增 `inference/*_hermes.py`，并更新 `MODELS` 和 CLI choices |
 | 接入新数据集 | `BENCHMARK_CONFIGS` 和相应评测函数 |
 
@@ -412,7 +465,8 @@ work(HermesVQA)
 4. `token_activity_cache` 会累计注意力，但当前 Top-K 分数仍使用本轮注意力；若要使用历史活跃度，需要明确融合方式。
 5. 模型加载通过复制基础模型实例状态并注册 forward hook 实现，依赖特定 Transformers 内部结构。升级依赖后应首先运行小模型 smoke test。
 6. `video_qa/run_infer.py` 使用 Bash/POSIX 命令合并和删除结果文件，默认运行环境是 Linux。
-7. 当前仓库没有测试目录。位置重索引、预算边界和摘要 token 是最应优先补测试的模块。
+7. Qwen2.5-VL 默认使用 eager attention；若要比较 Flash Attention 2，需要在命令和日志中显式记录 `--use_flash_attention` 与 `attn_implementation`。
+8. 当前仓库没有测试目录。位置重索引、预算边界和摘要 token 是最应优先补测试的模块。
 
 ## 13. 推荐阅读顺序
 

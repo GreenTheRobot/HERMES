@@ -556,11 +556,13 @@ HERMES/inference/vispec_draft/
 ```text
 qwen2.5_vl_3b_vispec_draft_latency:
   base model: models/Qwen2.5-VL-3B-Instruct
-  spec model: JLKang/ViSpec-Qwen2.5-VL-3B-Instruct
+  spec model: models/ViSpec-Qwen2.5-VL-3B-Instruct if present,
+              otherwise JLKang/ViSpec-Qwen2.5-VL-3B-Instruct
 
 qwen2.5_vl_7b_vispec_draft_latency:
   base model: models/Qwen2.5-VL-7B-Instruct
-  spec model: JLKang/ViSpec-Qwen2.5-VL-7B-Instruct
+  spec model: models/ViSpec-Qwen2.5-VL-7B-Instruct if present,
+              otherwise JLKang/ViSpec-Qwen2.5-VL-7B-Instruct
 ```
 
 如果 ViSpec 草稿头权重已经下载到本地，建议显式传入：

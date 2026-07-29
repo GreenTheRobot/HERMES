@@ -127,6 +127,8 @@ def run_eval(args, config):
                             args.vispec_spec_model_path,
                         ]
                     )
+            if args.use_flash_attention:
+                cmd.extend(["--use_flash_attention", "true"])
             if args.model in {'llava_ov_72b', 'llava_ov_72b_slidingwindow'}:
                 if gpu_ids:
                     device = ",".join(gpu_ids[4 * idx : 4 * idx + 4])
@@ -248,6 +250,11 @@ if __name__ == "__main__":
         "--skip_eval",
         action="store_true",
         help="Skip benchmark evaluation after inference and token timing analysis.",
+    )
+    parser.add_argument(
+        "--use_flash_attention",
+        action="store_true",
+        help="Use flash_attention_2 for Qwen2.5-VL backends. Defaults to eager attention.",
     )
     parser.add_argument(
         "--timing_detail_prefix",

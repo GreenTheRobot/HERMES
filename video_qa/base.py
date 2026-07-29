@@ -344,6 +344,14 @@ def work(QA_CLASS):
     parser.add_argument("--kv_size", type=int)
     parser.add_argument("--streaming", type=str2bool, nargs='?', const=True, default=False,
                         help="Streaming (online) mode. If False (default), uses offline mode where should_compact is always True.")
+    parser.add_argument(
+        "--use_flash_attention",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=False,
+        help="Use flash_attention_2 for Qwen2.5-VL backends. Defaults to eager attention.",
+    )
     parser.add_argument("--vispec_spec_model_path", type=str, default=None)
     parser.add_argument("--vispec_depth", type=int, default=3)
     parser.add_argument("--vispec_top_k", type=int, default=8)
@@ -394,6 +402,8 @@ def work(QA_CLASS):
         "streaming": args.streaming,
         "sample_fps": args.sample_fps,
     }
+    if args.model.startswith("qwen2.5_vl_"):
+        load_kwargs["use_flash_attention"] = args.use_flash_attention
     if args.model.endswith("_vispec_draft_latency"):
         load_kwargs.update(
             {

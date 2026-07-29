@@ -974,7 +974,8 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
 
 
 def load_model(model_path='Qwen/Qwen2.5-VL-7B-Instruct',
-               n_init=None, kv_size=None, streaming=True, device="cuda", sample_fps=1):
+               n_init=None, kv_size=None, streaming=True, device="cuda", sample_fps=1,
+               use_flash_attention=False):
     if kv_size is None or kv_size <= 0:
         raise ValueError("kv_size must be a positive integer for sliding-window inference")
 
@@ -983,10 +984,12 @@ def load_model(model_path='Qwen/Qwen2.5-VL-7B-Instruct',
     system_prompt = '<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n'
     init_prompt_ids = processor.tokenizer(system_prompt, return_tensors="pt").input_ids.to(device)
 
+    attn_implementation = "flash_attention_2" if use_flash_attention else "eager"
     base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_path,
         device_map="auto",
         torch_dtype=torch.float16,
+        attn_implementation=attn_implementation,
     )
 
     model = QwenVL_SlidingWindow.__new__(QwenVL_SlidingWindow)
@@ -1021,6 +1024,7 @@ def load_model(model_path='Qwen/Qwen2.5-VL-7B-Instruct',
 
     logger.info(f'n_init: {init_prompt_ids.shape[1] if n_init is None else n_init}')
     logger.info(f'kv_size: {kv_size}')
+    logger.info(f'attn_implementation: {attn_implementation}')
 
     model.eval()
 
