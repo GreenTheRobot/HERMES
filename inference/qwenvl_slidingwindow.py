@@ -216,6 +216,13 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         pos_3d = grid_pos_ids.unsqueeze(1).expand(3, batch, -1).clone()
         return pos_3d
 
+    def _build_causal_inputs(self, past_key_values, q_len: int, batch: int, device):
+        past_len = get_cache_seq_len(past_key_values)
+        total_len = past_len + q_len
+        attention_mask = torch.ones((batch, total_len), device=device, dtype=torch.long)
+        cache_position = torch.arange(past_len, total_len, device=device, dtype=torch.long)
+        return attention_mask, cache_position
+
     @torch.inference_mode()
     def _shrink_positions_and_rerotate_keys(self, keep_indices_per_layer):
         curr_lens = self._get_cache_seq_len_per_layer()
@@ -404,6 +411,8 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
             use_cache=True,
             return_dict=True,
             position_ids=position_ids_3d,
+            attention_mask=torch.ones((1, seq_len), device=input_device, dtype=torch.long),
+            cache_position=torch.arange(seq_len, device=input_device, dtype=torch.long),
         )
         self.kv_cache = output.past_key_values
         self.visual_start_idx = self.kv_cache[0][0].shape[2]
@@ -458,6 +467,9 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
             self._layer_position_ids[layer_idx] = position_ids_3d
 
         default_position_ids_3d = self._build_position_ids_3d_for_vision(grid_pos_ids, batch, device=input_device)
+        attention_mask, cache_position = self._build_causal_inputs(
+            self.kv_cache, q_len, batch, input_device
+        )
 
         out = self.language_model(
             inputs_embeds=video_features,
@@ -465,6 +477,8 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
             use_cache=True,
             return_dict=True,
             position_ids=default_position_ids_3d,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
         )
         self.kv_cache = out.past_key_values
         contiguous_kv(self.kv_cache)
@@ -706,12 +720,17 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         if use_flash_attn:
             attn_weights_local = self._compute_attention_scores_manually(local_input_ids, self.kv_cache)
         else:
+            attention_mask_local, cache_position_local = self._build_causal_inputs(
+                self.kv_cache, q_len_local, batch, device
+            )
             out_local = self.language_model(
                 input_ids=local_input_ids,
                 use_cache=False,
                 past_key_values=self.kv_cache,
                 output_attentions=True,
                 position_ids=position_ids_local_3d,
+                attention_mask=attention_mask_local,
+                cache_position=cache_position_local,
             )
             attn_weights_local = out_local.attentions
 
@@ -732,12 +751,17 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         if use_flash_attn:
             attn_weights_global = self._compute_attention_scores_manually(global_input_ids, self.kv_cache)
         else:
+            attention_mask_global, cache_position_global = self._build_causal_inputs(
+                self.kv_cache, q_len_global, batch, device
+            )
             out_global = self.language_model(
                 input_ids=global_input_ids,
                 use_cache=False,
                 past_key_values=self.kv_cache,
                 output_attentions=True,
                 position_ids=position_ids_global_3d,
+                attention_mask=attention_mask_global,
+                cache_position=cache_position_global,
             )
             attn_weights_global = out_global.attentions
 
@@ -759,12 +783,17 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         if use_flash_attn:
             attn_weights_mixed = self._compute_attention_scores_manually(mixed_input_ids, self.kv_cache)
         else:
+            attention_mask_mixed, cache_position_mixed = self._build_causal_inputs(
+                self.kv_cache, q_len_mixed, batch, device
+            )
             out_mixed = self.language_model(
                 input_ids=mixed_input_ids,
                 use_cache=False,
                 past_key_values=self.kv_cache,
                 output_attentions=True,
                 position_ids=position_ids_mixed_3d,
+                attention_mask=attention_mask_mixed,
+                cache_position=cache_position_mixed,
             )
             attn_weights_mixed = out_mixed.attentions
 
@@ -855,12 +884,17 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
             self._layer_position_ids[layer_idx] = position_ids_3d
 
         position_ids_3d = self._build_position_ids_3d_for_text(global_offset_prefill[0], q_len_prefill, batch, device=inputs_embeds.device)
+        attention_mask_prefill, cache_position_prefill = self._build_causal_inputs(
+            self.kv_cache, q_len_prefill, batch, inputs_embeds.device
+        )
 
         out = self.language_model(
             inputs_embeds=inputs_embeds,
             use_cache=True,
             past_key_values=self.kv_cache,
-            position_ids=position_ids_3d
+            position_ids=position_ids_3d,
+            attention_mask=attention_mask_prefill,
+            cache_position=cache_position_prefill,
         )
         past_key_values = out.past_key_values
         logits = self.lm_head(out.last_hidden_state)
@@ -950,6 +984,9 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
                 self._layer_position_ids[layer_idx] = pos_step_3d
 
             position_ids_3d = self._build_position_ids_3d_for_text(curr_global_offset[0], 1, 1, device=device)
+            attention_mask_step, cache_position_step = self._build_causal_inputs(
+                past_key_values, 1, 1, device
+            )
 
             if input_ids.is_cuda:
                 self._sync_cuda_devices()
@@ -958,7 +995,9 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
                 input_ids=torch.as_tensor([[token]], device=device),
                 use_cache=True,
                 past_key_values=past_key_values,
-                position_ids=position_ids_3d
+                position_ids=position_ids_3d,
+                attention_mask=attention_mask_step,
+                cache_position=cache_position_step,
             )
             logits = self.lm_head(out.last_hidden_state)
             if input_ids.is_cuda:
