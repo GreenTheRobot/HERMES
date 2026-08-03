@@ -217,7 +217,23 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         return pos_3d
 
     def _build_causal_inputs(self, past_key_values, q_len: int, batch: int, device, dtype=None):
-        past_len = get_cache_seq_len(past_key_values)
+        if past_key_values is None:
+            past_len = 0
+            past_min = 0
+        else:
+            past_lens = [past_key_values[layer_idx][0].shape[2] for layer_idx in range(len(past_key_values))]
+            if past_lens:
+                past_len = max(past_lens)
+                past_min = min(past_lens)
+                if past_min != past_len:
+                    logger.warning(
+                        "Layer KV lengths differ while building causal mask: min=%d max=%d; using max length.",
+                        past_min,
+                        past_len,
+                    )
+            else:
+                past_len = 0
+                past_min = 0
         total_len = past_len + q_len
         dtype = dtype or self.dtype
         min_value = torch.finfo(dtype).min
@@ -228,6 +244,15 @@ class QwenVL_SlidingWindow(Qwen2_5_VLForConditionalGeneration, Abstract_Hermes):
         attention_mask = attention_mask.masked_fill(allowed, 0)
         attention_mask = attention_mask.view(1, 1, q_len, total_len).expand(batch, 1, q_len, total_len)
         cache_position = torch.arange(past_len, total_len, device=device, dtype=torch.long)
+        if total_len >= self.kv_size and q_len > 1:
+            logger.info(
+                "[CausalMask] past_min=%d past_max=%d q_len=%d total_len=%d mask_shape=%s",
+                past_min,
+                past_len,
+                q_len,
+                total_len,
+                tuple(attention_mask.shape),
+            )
         return attention_mask, cache_position
 
     @torch.inference_mode()
